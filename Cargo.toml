@@ -1,0 +1,12 @@
+[package]
+name = "viewany"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+image = "0.25"
+rfd = "0.15"
+arboard = "3.4"
+open = "5.3"
