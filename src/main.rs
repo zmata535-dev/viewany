@@ -71,6 +71,117 @@ fn parse_path_arg(arg: &str) -> PathBuf {
     PathBuf::from(percent_decode(raw))
 }
 
+fn is_svg_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("svg") || e.eq_ignore_ascii_case("svgz"))
+        .unwrap_or(false)
+}
+
+fn is_svg_bytes(bytes: &[u8]) -> bool {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim_start();
+        trimmed.starts_with("<svg") || trimmed.starts_with("<?xml")
+    } else {
+        false
+    }
+}
+
+fn load_svg_from_bytes(data: &[u8]) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+    let mut fontdb = resvg::usvg::fontdb::Database::new();
+    fontdb.load_system_fonts();
+    let opt = resvg::usvg::Options {
+        fontdb: std::sync::Arc::new(fontdb),
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_data(data, &opt)?;
+    let size = tree.size();
+    let orig_w = size.width();
+    let orig_h = size.height();
+
+    // High quality scaling: if vector icon is small, render at least 1024px for crisp zoom
+    let target_min_dim = 1024.0;
+    let max_orig = orig_w.max(orig_h);
+    let scale = if max_orig > 0.0 && max_orig < target_min_dim {
+        target_min_dim / max_orig
+    } else {
+        1.0
+    };
+    let render_w = (orig_w * scale).round().max(1.0) as u32;
+    let render_h = (orig_h * scale).round().max(1.0) as u32;
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(render_w, render_h)
+        .ok_or("Failed to allocate pixmap for SVG rendering")?;
+
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    // Demultiply alpha from premultiplied tiny-skia pixels
+    let premultiplied = pixmap.data();
+    let mut straight_rgba = Vec::with_capacity(premultiplied.len());
+    for chunk in premultiplied.chunks_exact(4) {
+        let r = chunk[0];
+        let g = chunk[1];
+        let b = chunk[2];
+        let a = chunk[3];
+        if a == 0 {
+            straight_rgba.extend_from_slice(&[0, 0, 0, 0]);
+        } else if a == 255 {
+            straight_rgba.extend_from_slice(&[r, g, b, 255]);
+        } else {
+            let a_f = a as f32 / 255.0;
+            let dr = ((r as f32 / a_f).round() as u8).min(255);
+            let dg = ((g as f32 / a_f).round() as u8).min(255);
+            let db = ((b as f32 / a_f).round() as u8).min(255);
+            straight_rgba.extend_from_slice(&[dr, dg, db, a]);
+        }
+    }
+
+    let rgba_img = image::RgbaImage::from_raw(render_w, render_h, straight_rgba)
+        .ok_or("Failed to construct RGBA image from SVG pixmap")?;
+    Ok(DynamicImage::ImageRgba8(rgba_img))
+}
+
+fn load_svg_from_path(path: &std::path::Path) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+    if let Ok(data) = std::fs::read(path) {
+        if let Ok(img) = load_svg_from_bytes(&data) {
+            return Ok(img);
+        }
+    }
+
+    // Fallback via rsvg-convert if available
+    let temp_png = std::env::temp_dir().join("viewany_temp_svg_render.png");
+    let status = std::process::Command::new("rsvg-convert")
+        .arg("-o")
+        .arg(&temp_png)
+        .arg(path)
+        .status();
+
+    if status.is_ok() && status.unwrap().success() {
+        if let Ok(img) = image::open(&temp_png) {
+            let _ = std::fs::remove_file(&temp_png);
+            return Ok(img);
+        }
+    }
+
+    Err(format!("Could not render SVG: {}", path.display()).into())
+}
+
+fn save_svg_wrapper(path: &std::path::Path, img: &DynamicImage) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = img.dimensions();
+    let mut png_bytes = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)?;
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    let svg_content = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{w}" height="{h}" viewBox="0 0 {w} {h}">
+  <image xlink:href="data:image/png;base64,{b64}" width="{w}" height="{h}"/>
+</svg>"#
+    );
+    std::fs::write(path, svg_content)?;
+    Ok(())
+}
+
 struct ViewAnyApp {
     image_path: Option<PathBuf>,
     dynamic_image: Option<DynamicImage>,
@@ -136,7 +247,7 @@ impl ViewAnyApp {
                     let path = entry.path();
                     if path.is_file() {
                         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                            if ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif", "ico"]
+                            if ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif", "ico", "svg", "svgz"]
                                 .contains(&ext.to_lowercase().as_str())
                             {
                                 app.load_image(path);
@@ -151,7 +262,13 @@ impl ViewAnyApp {
         app
     }
     fn load_image(&mut self, path: PathBuf) {
-        match image::open(&path) {
+        let load_result = if is_svg_file(&path) {
+            load_svg_from_path(&path)
+        } else {
+            image::open(&path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        };
+
+        match load_result {
             Ok(img) => {
                 self.dynamic_image = Some(img);
                 self.image_path = Some(path.clone());
@@ -183,7 +300,7 @@ impl ViewAnyApp {
                         p.is_file()
                             && p.extension()
                                 .and_then(|ext| ext.to_str())
-                                .map(|ext| ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif", "ico"].contains(&ext.to_lowercase().as_str()))
+                                .map(|ext| ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif", "ico", "svg", "svgz"].contains(&ext.to_lowercase().as_str()))
                                 .unwrap_or(false)
                     })
                     .collect();
@@ -279,7 +396,13 @@ impl ViewAnyApp {
 
     fn save_image(&mut self) {
         if let (Some(path), Some(img)) = (&self.image_path, &self.dynamic_image) {
-            match img.save(path) {
+            let res = if is_svg_file(path) {
+                save_svg_wrapper(path, img)
+            } else {
+                img.save(path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            };
+
+            match res {
                 Ok(_) => {
                     self.is_modified = false;
                     self.status_message = format!("Saved changes to {}", path.display());
@@ -296,10 +419,17 @@ impl ViewAnyApp {
     fn save_as(&mut self) {
         if let Some(img) = &self.dynamic_image {
             if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "svg"])
+                .add_filter("SVG Vector Graphics", &["svg"])
                 .save_file()
             {
-                match img.save(&path) {
+                let res = if is_svg_file(&path) {
+                    save_svg_wrapper(&path, img)
+                } else {
+                    img.save(&path).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                };
+
+                match res {
                     Ok(_) => {
                         self.image_path = Some(path.clone());
                         self.is_modified = false;
@@ -318,7 +448,9 @@ impl ViewAnyApp {
 
     fn open_file_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "tif", "ico"])
+            .add_filter("All Supported Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "tif", "ico", "svg", "svgz"])
+            .add_filter("SVG Vector Graphics", &["svg", "svgz"])
+            .add_filter("Raster Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff", "tif", "ico"])
             .pick_file()
         {
             self.load_image(path);
@@ -404,7 +536,16 @@ impl eframe::App for ViewAnyApp {
                     }
                 }
                 if !loaded {
-                    match image::load_from_memory(bytes) {
+                    let res = if is_svg_bytes(bytes) {
+                        load_svg_from_bytes(bytes)
+                    } else {
+                        match image::load_from_memory(bytes) {
+                            Ok(img) => Ok(img),
+                            Err(_) => load_svg_from_bytes(bytes),
+                        }
+                    };
+
+                    match res {
                         Ok(img) => {
                             self.dynamic_image = Some(img);
                             self.image_path = None;

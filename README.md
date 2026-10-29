@@ -6,10 +6,11 @@
 
 ## Features
 
-- **Multi-Format Support**: Opens PNG, JPEG, WebP, BMP, GIF, TIFF, and ICO files.
-- **Drag & Drop**: Drop any image directly into the application window to view it.
-- **Desktop Integration**: Supports Linux "Open With..." file associations and desktop launcher (`viewany.desktop`).
-- **Smooth Navigation**: Browse through sibling images in the same folder using Arrow keys or bottom panel buttons.
+- **Multi-Format Support**: Opens PNG, JPEG, WebP, BMP, GIF, TIFF, ICO, and **SVG/SVGZ** vector graphics.
+- **SVG Rendering**: High-quality SVG and SVGZ rendering via [`resvg`](https://github.com/RazrFalcon/resvg) with full system font support. Small icons are automatically upscaled to at least 1024 px for crisp zoom. Modified SVGs are re-exported as embedded-PNG SVGs, preserving the `.svg` extension.
+- **Drag & Drop**: Drop any image (including SVG files or SVG text) directly into the application window to view it.
+- **Desktop Integration**: Supports Linux "Open With..." file associations and desktop launcher (`viewany.desktop`). SVG MIME types (`image/svg+xml`, `image/svg+xml-compressed`) are registered.
+- **Smooth Navigation**: Browse through sibling images in the same folder (including SVGs) using Arrow keys or bottom panel buttons.
 - **Zoom & Pan**: Smooth scroll-wheel zooming and keyboard controls (+/-) with 100% reset.
 - **Selection Crop**: Click and drag to crop any portion of the image.
 - **Transformations**: 90° clockwise rotation and color inversion.
@@ -18,6 +19,7 @@
   - Copy image directly to clipboard (<kbd>Ctrl</kbd>+<kbd>C</kbd> or menu).
   - Copy image file path.
   - Open containing folder ("Go to Location") in system file manager.
+- **Save As SVG**: Export any loaded image back as an SVG (via embedded PNG data URI).
 - **Unobtrusive UI**: Minimalist interface with a right-click context menu and keyboard shortcuts.
 
 ## Keyboard Shortcuts
@@ -41,7 +43,7 @@ Ensure you have Rust installed (via [rustup](https://rustup.rs/)):
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/viewany.git
+git clone https://github.com/zmata535-dev/viewany.git
 cd viewany
 
 # Build release binary
@@ -66,6 +68,16 @@ cp viewany_icon.png ~/.local/share/pixmaps/viewany.png
 # Update desktop application database
 update-desktop-database ~/.local/share/applications/
 ```
+
+## SVG Support Notes
+
+SVG files are rendered at runtime using [`resvg`](https://github.com/RazrFalcon/resvg) — no external tools required. Features include:
+
+- Full CSS, gradients, filters, and clip-path support.
+- System fonts used for `<text>` elements (via `fontdb`).
+- SVGZ (gzip-compressed SVG) support out of the box.
+- Icons smaller than 1024 px are automatically supersampled for crisp display.
+- Saving an SVG writes the rasterized content back as an embedded-PNG data URI SVG, preserving the original file extension.
 
 ## License
 

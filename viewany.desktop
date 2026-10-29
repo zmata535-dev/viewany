@@ -2,10 +2,10 @@
 Type=Application
 Name=ViewAny
 Comment=Universal Image Viewer built in Rust with editing and conversion features
-TryExec=/home/zma/Projects/viewany/target/release/viewany
-Exec=/home/zma/Projects/viewany/target/release/viewany %F
+TryExec=viewany
+Exec=viewany %F
 Icon=viewany
 Terminal=false
 StartupNotify=true
-Categories=Graphics;Viewer;2DGraphics;RasterGraphics;
-MimeType=image/jpeg;image/png;image/webp;image/bmp;image/gif;image/tiff;image/x-tga;image/vnd.microsoft.icon;image/x-icon;
+Categories=Graphics;Viewer;2DGraphics;RasterGraphics;VectorGraphics;
+MimeType=image/jpeg;image/png;image/webp;image/bmp;image/gif;image/tiff;image/x-tga;image/vnd.microsoft.icon;image/x-icon;image/svg+xml;image/svg+xml-compressed;
